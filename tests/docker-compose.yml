@@ -1,0 +1,9 @@
+---
+version: "3"
+services:
+  postgis:
+    image: nickblah/postgis:12-postgis-3
+    ports:
+      - "5432"
+    tmpfs:
+      - /var/lib/postgresql/data

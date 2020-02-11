@@ -331,7 +331,7 @@ class DatasetStructure:
         """ Feature iterator yielding tuples, ordered by the columns from col_names """
 
         # not optimised in V0
-        for k, f in self.features():
+        for k, f in self.features(**kwargs):
             yield tuple(f[c] for c in col_names)
 
     def import_meta(self, repo, index, source):
@@ -642,7 +642,7 @@ class Dataset1(DatasetStructure):
 
     def _msgpack_unpack_ext(self, code, data):
         if code == self.MSGPACK_EXT_GEOM:
-            return data  # bytes
+            return gpkg.GPKGGeometry(data)  # bytes
         else:
             self.L.warn("Unexpected msgpack extension: %d", code)
             return msgpack.ExtType(code, data)
@@ -765,8 +765,10 @@ class Dataset1(DatasetStructure):
         pk_enc, blob = self._get_feature(pk_value)
         return pk_enc, self.repo_feature_to_dict(pk_enc, blob, ogr_geoms=ogr_geoms)
 
-    def get_feature_tuples(self, pk_values, col_names, *, ignore_missing=False):
-        tupleizer = self.build_feature_tupleizer(col_names)
+    def get_feature_tuples(
+        self, pk_values, col_names, *, ignore_missing=False, **kwargs
+    ):
+        tupleizer = self.build_feature_tupleizer(col_names, **kwargs)
         for pk in pk_values:
             try:
                 pk_enc, blob = self._get_feature(pk)
@@ -857,7 +859,7 @@ class Dataset1(DatasetStructure):
 
     def feature_tuples(self, col_names, **kwargs):
         """ Optimised feature iterator yielding tuples, ordered by the columns from col_names """
-        tupleizer = self.build_feature_tupleizer(col_names)
+        tupleizer = self.build_feature_tupleizer(col_names, **kwargs)
         return self._features(tupleizer, fast=True)
 
     def feature_count(self, fast=True):

@@ -11,51 +11,41 @@ import click
 import pygit2
 from osgeo import gdal
 
-from . import gpkg, diff
+from .. import gpkg, diff
+from .base import WorkingCopy
 
 L = logging.getLogger("sno.working_copy")
-
-
-class WorkingCopy:
-    @classmethod
-    def open(cls, repo):
-        repo_cfg = repo.config
-        if "sno.workingcopy.version" in repo_cfg:
-            version = repo_cfg["sno.workingcopy.version"]
-            if repo_cfg.get_int("sno.workingcopy.version") != 1:
-                raise NotImplementedError(f"Working copy version: {version}")
-
-            path = repo_cfg["sno.workingcopy.path"]
-            if not (Path(repo.path) / path).is_file():
-                raise FileNotFoundError(f"Working copy missing? {path}")
-
-            return WorkingCopy_GPKG_1(repo, path)
-
-        else:
-            return None
-
-    @classmethod
-    def new(cls, repo, path, version=1, **kwargs):
-        if (Path(repo.path) / path).exists():
-            raise FileExistsError(path)
-
-        return WorkingCopy_GPKG_1(repo, path, **kwargs)
-
-    class Mismatch(ValueError):
-        def __init__(self, working_copy_tree_id, match_tree_id):
-            self.working_copy_tree_id = working_copy_tree_id
-            self.match_tree_id = match_tree_id
-
-        def __str__(self):
-            return f"Working Copy is tree {self.working_copy_tree_id}; expecting {self.match_tree_id}"
 
 
 class WorkingCopyGPKG(WorkingCopy):
     META_PREFIX = ".sno-"
 
-    def __init__(self, repo, path):
+    @classmethod
+    def open(cls, repo, uri):
+        if uri.startswith("gpkg://"):
+            uri = uri
+            path = uri.split("://", 1)[1]
+        else:
+            path = uri
+            uri = f"gpkg://{path}"
+
+        if not (Path(repo.path) / path).is_file():
+            raise FileNotFoundError(f"Working copy missing? {path}")
+
+        return cls(repo, path)
+
+    def __init__(self, repo, uri):
         self.repo = repo
-        self.path = path
+
+        if uri.startswith("gpkg://"):
+            self.uri = uri
+            self.path = uri.split("://", 1)[1]
+        else:
+            self.path = uri
+            self.uri = f"gpkg://{self.path}"
+
+    def __str__(self):
+        return str(self.path)
 
     @property
     def full_path(self):
@@ -315,7 +305,7 @@ class WorkingCopyGPKG(WorkingCopy):
             )
 
         self.repo.config["sno.workingcopy.version"] = 1
-        self.repo.config["sno.workingcopy.path"] = str(new_path)
+        self.repo.config["sno.workingcopy.path"] = f"gpkg://{new_path}"
 
     def write_full(self, commit, dataset, safe=True):
         raise NotImplementedError()

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import click
 import pygit2
@@ -11,12 +12,11 @@ from .working_copy import WorkingCopy
 @click.command()
 @click.pass_context
 @click.option("branch", "-b", help="Name for new branch")
-@click.option("fmt", "--format", type=click.Choice(["GPKG"]), default="GPKG")
 @click.option("--force", "-f", is_flag=True)
-@click.option("--path", type=click.Path(writable=True, dir_okay=False))
+@click.option("--path")
 @click.option("datasets", "--dataset", "-d", multiple=True)
 @click.argument("refish", default=None, required=False)
-def checkout(ctx, branch, fmt, force, path, datasets, refish):
+def checkout(ctx, branch, force, path, datasets, refish):
     """ Switch branches or restore working tree files """
     repo_path = ctx.obj.repo_path
     repo = ctx.obj.repo
@@ -67,10 +67,10 @@ def checkout(ctx, branch, fmt, force, path, datasets, refish):
     if wc:
         if path is not None:
             raise click.ClickException(
-                f"This repository already has a working copy at: {wc.path}",
+                f"This repository already has a working copy at: {wc}",
             )
 
-        click.echo(f"Updating {wc.path} ...")
+        click.echo(f"Updating {wc} ...")
         print(f"commit={commit.id} head_ref={head_ref}")
         wc.reset(commit, repo_structure, force=force)
 
@@ -79,10 +79,23 @@ def checkout(ctx, branch, fmt, force, path, datasets, refish):
 
     else:
         if path is None:
-            path = f"{repo_path.resolve().stem}.gpkg"
+            fmt = "gpkg"
+            path = f"{fmt}://{repo_path.resolve().stem}.gpkg"
+        else:
+            up = urlsplit(path)
+            fmt = up.scheme
+            if not fmt:
+                fmt = "gpkg"
+                path = f"{fmt}://{path}"
+
+            if fmt not in ("gpkg", "postgresql"):
+                raise click.BadParameter(
+                    "Expected gpkg:// or postgresql:// for working copy",
+                    param_hint="--url",
+                )
 
         # new working-copy path
-        click.echo(f'Checkout {refish or "HEAD"} to {path} as {fmt} ...')
+        click.echo(f'Checkout {refish or "HEAD"} to {path} ...')
         repo.reset(commit.id, pygit2.GIT_RESET_SOFT)
 
         checkout_new(repo_structure, path, datasets=datasets, commit=commit)

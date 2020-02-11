@@ -1,0 +1,661 @@
+import re
+import subprocess
+
+import pytest
+
+import psycopg2
+import pygit2
+
+from sno.working_copy import WorkingCopy
+
+
+H = pytest.helpers.helpers()
+
+
+def pg(postgis_db):
+    dbconn = psycopg2.connect(postgis_db)
+    return dbconn, dbconn.cursor()
+
+
+@pytest.mark.parametrize(
+    "archive,table,commit_sha",
+    [
+        pytest.param("points", H.POINTS_LAYER, H.POINTS_HEAD_SHA, id="points"),
+        pytest.param(
+            "polygons", H.POLYGONS_LAYER, H.POLYGONS_HEAD_SHA, id="polygons-pk"
+        ),
+        pytest.param("table", H.TABLE_LAYER, H.TABLE_HEAD_SHA, id="table"),
+    ],
+)
+def test_checkout_workingcopy(
+    archive, table, commit_sha, data_archive, cli_runner, postgis_db
+):
+    """ Checkout a working copy to edit """
+    with data_archive(archive) as repo_path:
+        H.clear_working_copy()
+
+        r = cli_runner.invoke(["checkout", f"--path={postgis_db}"])
+        assert r.exit_code == 0, r
+        lines = r.stdout.splitlines()
+        assert re.match(fr"Checkout HEAD to .+ \.\.\.$", lines[0])
+        assert re.match(fr"Commit: {commit_sha}$", lines[1])
+
+        _, dbcur = pg(postgis_db)
+        assert H.row_count(dbcur, table) > 0
+
+        repo = pygit2.Repository(str(repo_path))
+        assert repo.is_bare
+
+        assert repo.head.name == "refs/heads/master"
+        assert repo.head.shorthand == "master"
+
+        head_tree = repo.head.peel(pygit2.Tree)
+
+        wc_tree_id = H.db_tree_sha(dbcur)
+        assert wc_tree_id == head_tree.hex
+
+        wc = WorkingCopy.open(repo)
+        assert wc.assert_db_tree_match(head_tree)
+
+
+def test_checkout_detached(data_working_copy_pg, cli_runner):
+    """ Checkout a working copy to edit """
+    with data_working_copy_pg("points") as (repo_dir, dburl):
+        repo = pygit2.Repository(str(repo_dir))
+        _, dbcur = pg(dburl)
+        assert H.db_tree_sha(dbcur) == repo[H.POINTS_HEAD_SHA].peel(pygit2.Tree).hex
+
+        # checkout the previous commit
+        r = cli_runner.invoke(["checkout", H.POINTS_HEAD1_SHA[:8]])
+        assert r.exit_code == 0, r
+        assert H.db_tree_sha(dbcur) == repo[H.POINTS_HEAD1_SHA].peel(pygit2.Tree).hex
+
+        assert repo.head.target.hex == H.POINTS_HEAD1_SHA
+        assert repo.head_is_detached
+        assert repo.head.name == "HEAD"
+
+
+def test_checkout_references(data_working_copy_pg, cli_runner, tmp_path):
+    with data_working_copy_pg("points") as (repo_dir, dburl):
+        _, dbcur = pg(dburl)
+        repo = pygit2.Repository(str(repo_dir))
+
+        # create a tag
+        repo.create_reference("refs/tags/version1", repo.head.target)
+
+        subprocess.run(["git", "init", "--bare", tmp_path], check=True)
+
+        r = cli_runner.invoke(["remote", "add", "myremote", tmp_path])
+        assert r.exit_code == 0, r
+
+        r = cli_runner.invoke(["push", "myremote", "master"])
+        assert r.exit_code == 0, r
+
+        def r_head():
+            return (repo.head.name, repo.head.target.hex)
+
+        # checkout the HEAD commit
+        r = cli_runner.invoke(["checkout", "HEAD"])
+        assert r.exit_code == 0, r
+        assert r_head() == ("refs/heads/master", H.POINTS_HEAD_SHA)
+        assert not repo.head_is_detached
+        assert H.db_tree_sha(dbcur) == repo[H.POINTS_HEAD_SHA].peel(pygit2.Tree).hex
+
+        # checkout the HEAD-but-1 commit
+        r = cli_runner.invoke(["checkout", "HEAD~1"])
+        assert r.exit_code == 0, r
+        assert r_head() == ("HEAD", H.POINTS_HEAD1_SHA)
+        assert repo.head_is_detached
+        assert H.db_tree_sha(dbcur) == repo[H.POINTS_HEAD1_SHA].peel(pygit2.Tree).hex
+
+        # checkout the master HEAD via branch-name
+        r = cli_runner.invoke(["checkout", "master"])
+        assert r.exit_code == 0, r
+        assert r_head() == ("refs/heads/master", H.POINTS_HEAD_SHA)
+        assert not repo.head_is_detached
+        assert H.db_tree_sha(dbcur) == repo[H.POINTS_HEAD_SHA].peel(pygit2.Tree).hex
+
+        # checkout a short-sha commit
+        r = cli_runner.invoke(["checkout", H.POINTS_HEAD1_SHA[:8]])
+        assert r.exit_code == 0, r
+        assert r_head() == ("HEAD", H.POINTS_HEAD1_SHA)
+        assert repo.head_is_detached
+        assert H.db_tree_sha(dbcur) == repo[H.POINTS_HEAD1_SHA].peel(pygit2.Tree).hex
+
+        # checkout the master HEAD via refspec
+        r = cli_runner.invoke(["checkout", "refs/heads/master"])
+        assert r.exit_code == 0, r
+        assert r_head() == ("refs/heads/master", H.POINTS_HEAD_SHA)
+        assert not repo.head_is_detached
+        assert H.db_tree_sha(dbcur) == repo[H.POINTS_HEAD_SHA].peel(pygit2.Tree).hex
+
+        # checkout the tag
+        r = cli_runner.invoke(["checkout", "version1"])
+        assert r.exit_code == 0, r
+        assert r_head() == ("HEAD", H.POINTS_HEAD_SHA)
+        assert repo.head_is_detached
+        assert H.db_tree_sha(dbcur) == repo[H.POINTS_HEAD_SHA].peel(pygit2.Tree).hex
+
+        # checkout the remote branch
+        r = cli_runner.invoke(["checkout", "myremote/master"])
+        assert r.exit_code == 0, r
+        assert r_head() == ("HEAD", H.POINTS_HEAD_SHA)
+        assert repo.head_is_detached
+        assert H.db_tree_sha(dbcur) == repo[H.POINTS_HEAD_SHA].peel(pygit2.Tree).hex
+
+
+def test_checkout_branch(data_working_copy_pg, cli_runner, tmp_path):
+    with data_working_copy_pg("points") as (repo_path, dburl):
+        db, dbcur = pg(dburl)
+
+        # creating a new branch with existing name errors
+        r = cli_runner.invoke(["checkout", "-b", "master"])
+        assert r.exit_code == 2, r
+        assert r.stdout.splitlines()[-1].endswith(
+            "A branch named 'master' already exists."
+        )
+
+        subprocess.run(["git", "init", "--bare", tmp_path], check=True)
+        r = cli_runner.invoke(["remote", "add", "myremote", tmp_path])
+        assert r.exit_code == 0, r
+
+        r = cli_runner.invoke(["push", "--set-upstream", "myremote", "master"])
+        assert r.exit_code == 0, r
+
+        # new branch
+        r = cli_runner.invoke(["checkout", "-b", "foo"])
+        assert r.exit_code == 0, r
+
+        repo = pygit2.Repository(str(repo_path))
+        assert repo.head.name == "refs/heads/foo"
+        assert "foo" in repo.branches
+        assert repo.head.peel(pygit2.Commit).hex == H.POINTS_HEAD_SHA
+
+        # make some changes
+        with db:
+            dbcur.execute(H.mogrify_sql(dbcur, H.POINTS_INSERT), H.POINTS_RECORD)
+            assert dbcur.rowcount == 1
+
+        r = cli_runner.invoke(["commit", "-m", "test1"])
+        assert r.exit_code == 0, r
+
+        assert repo.head.peel(pygit2.Commit).hex != H.POINTS_HEAD_SHA
+
+        r = cli_runner.invoke(["checkout", "master"])
+        assert r.exit_code == 0, r
+
+        assert repo.head.name == "refs/heads/master"
+        assert repo.head.peel(pygit2.Commit).hex == H.POINTS_HEAD_SHA
+
+        # new branch from remote
+        r = cli_runner.invoke(["checkout", "-b", "test99", "myremote/master"])
+        assert r.exit_code == 0, r
+        assert repo.head.name == "refs/heads/test99"
+        assert "test99" in repo.branches
+        assert repo.head.peel(pygit2.Commit).hex == H.POINTS_HEAD_SHA
+        branch = repo.branches["test99"]
+        assert branch.upstream_name == "refs/remotes/myremote/master"
+
+
+# def test_switch_branch(data_working_copy, geopackage, cli_runner, tmp_path):
+#     with data_working_copy("points") as (repo_path, wc):
+#         db = geopackage(wc)
+
+#         # creating a new branch with existing name errors
+#         r = cli_runner.invoke(["switch", "-c", "master"])
+#         assert r.exit_code == 2, r
+#         assert r.stdout.splitlines()[-1].endswith(
+#             "A branch named 'master' already exists."
+#         )
+
+#         subprocess.run(["git", "init", "--bare", tmp_path], check=True)
+#         r = cli_runner.invoke(["remote", "add", "myremote", tmp_path])
+#         assert r.exit_code == 0, r
+
+#         r = cli_runner.invoke(["push", "--set-upstream", "myremote", "master"])
+#         assert r.exit_code == 0, r
+
+#         # new branch
+#         r = cli_runner.invoke(["switch", "-c", "foo"])
+#         assert r.exit_code == 0, r
+
+#         repo = pygit2.Repository(str(repo_path))
+#         assert repo.head.name == "refs/heads/foo"
+#         assert "foo" in repo.branches
+#         assert repo.head.peel(pygit2.Commit).hex == H.POINTS_HEAD_SHA
+
+#         # make some changes
+#         db = geopackage(wc)
+#         with db:
+#             cur = db.cursor()
+
+#             cur.execute(H.POINTS_INSERT, H.POINTS_RECORD)
+#             assert cur.rowcount == 1
+
+#             cur.execute(f"UPDATE {H.POINTS_LAYER} SET fid=30000 WHERE fid=3;")
+#             assert cur.rowcount == 1
+
+#         r = cli_runner.invoke(["commit", "-m", "test1"])
+#         assert r.exit_code == 0, r
+
+#         new_commit = repo.head.peel(pygit2.Commit).hex
+#         assert new_commit != H.POINTS_HEAD_SHA
+
+#         r = cli_runner.invoke(["switch", "master"])
+#         assert r.exit_code == 0, r
+
+#         assert H.row_count(db, H.POINTS_LAYER) == H.POINTS_ROWCOUNT
+
+#         assert repo.head.name == "refs/heads/master"
+#         assert repo.head.peel(pygit2.Commit).hex == H.POINTS_HEAD_SHA
+
+#         # make some changes
+#         with db:
+#             cur = db.cursor()
+
+#             cur.execute(H.POINTS_INSERT, H.POINTS_RECORD)
+#             assert cur.rowcount == 1
+
+#             cur.execute(f"UPDATE {H.POINTS_LAYER} SET fid=40000 WHERE fid=4;")
+#             assert cur.rowcount == 1
+
+#         r = cli_runner.invoke(["switch", "foo"])
+#         assert r.exit_code == 1, r
+#         assert "Error: You have uncommitted changes in your working copy." in r.stdout
+
+#         r = cli_runner.invoke(["switch", "foo", "--discard-changes"])
+#         assert r.exit_code == 0, r
+
+#         assert H.row_count(db, H.POINTS_LAYER) == H.POINTS_ROWCOUNT + 1
+
+#         assert repo.head.name == "refs/heads/foo"
+#         assert repo.head.peel(pygit2.Commit).hex == new_commit
+
+#         # new branch from remote
+#         r = cli_runner.invoke(["switch", "-c", "test99", "myremote/master"])
+#         assert r.exit_code == 0, r
+#         assert repo.head.name == "refs/heads/test99"
+#         assert "test99" in repo.branches
+#         assert repo.head.peel(pygit2.Commit).hex == H.POINTS_HEAD_SHA
+#         branch = repo.branches["test99"]
+#         assert branch.upstream_name == "refs/remotes/myremote/master"
+
+#         assert H.row_count(db, H.POINTS_LAYER) == H.POINTS_ROWCOUNT
+
+
+# @pytest.mark.parametrize(
+#     "archive,layer",
+#     [
+#         pytest.param("points", H.POINTS_LAYER, id="points"),
+#         pytest.param("polygons", H.POLYGONS_LAYER, id="polygons-pk"),
+#         pytest.param("table", H.TABLE_LAYER, id="table"),
+#     ],
+# )
+# @pytest.mark.parametrize(
+#     "via",
+#     [
+#         pytest.param("reset", id="via-reset"),
+#         pytest.param("checkout", id="via-checkout"),
+#     ],
+# )
+# def test_working_copy_reset(
+#     archive, layer, via, data_working_copy, cli_runner, geopackage
+# ):
+#     """
+#     Check that we reset any working-copy changes correctly before doing any new checkout
+
+#     We can do this via `sno reset` or `sno checkout --force HEAD`
+#     """
+#     if layer == H.POINTS_LAYER:
+#         pk_field = H.POINTS_LAYER_PK
+#         rec = H.POINTS_RECORD
+#         sql = H.POINTS_INSERT
+#         del_pk = 5
+#         upd_field = "t50_fid"
+#         upd_field_value = 888_888
+#         upd_pk_range = (10, 15)
+#         id_chg_pk = 20
+#     elif layer == H.POLYGONS_LAYER:
+#         pk_field = H.POLYGONS_LAYER_PK
+#         rec = H.POLYGONS_RECORD
+#         sql = H.POLYGONS_INSERT
+#         del_pk = 1_456_912
+#         upd_field = "survey_reference"
+#         upd_field_value = "test"
+#         upd_pk_range = (1_459_750, 1_460_312)
+#         id_chg_pk = 1_460_583
+#     elif layer == H.TABLE_LAYER:
+#         pk_field = H.TABLE_LAYER_PK
+#         rec = H.TABLE_RECORD
+#         sql = H.TABLE_INSERT
+#         del_pk = 5
+#         upd_field = "name"
+#         upd_field_value = "test"
+#         upd_pk_range = (10, 15)
+#         id_chg_pk = 20
+#     else:
+#         raise NotImplementedError(f"layer={layer}")
+
+#     with data_working_copy(archive, force_new=True) as (repo_dir, wc):
+#         db = geopackage(wc)
+
+#         h_before = H.db_table_hash(db, layer, pk_field)
+#         with db:
+#             cur = db.cursor()
+#             try:
+#                 cur.execute(sql, rec)
+#             except sqlite3.OperationalError:
+#                 print(sql, rec)
+#                 raise
+#             assert cur.rowcount == 1
+
+#             cur.execute(f"DELETE FROM {layer} WHERE {pk_field} < {del_pk};")
+#             assert cur.rowcount == 4
+#             cur.execute(
+#                 f"UPDATE {layer} SET {upd_field} = ? WHERE {pk_field}>=? AND {pk_field}<?;",
+#                 [upd_field_value, upd_pk_range[0], upd_pk_range[1]],
+#             )
+#             assert cur.rowcount == 5
+#             cur.execute(
+#                 f"UPDATE {layer} SET {pk_field}=? WHERE {pk_field}=?;",
+#                 [9998, id_chg_pk],
+#             )
+#             assert cur.rowcount == 1
+
+#             change_count = db.execute(
+#                 """SELECT COUNT(*) FROM ".sno-track";"""
+#             ).fetchone()[0]
+#             assert change_count == (1 + 4 + 5 + 2)
+
+#         if via == "reset":
+#             # using `sno reset`
+#             r = cli_runner.invoke(["reset"])
+#             assert r.exit_code == 0, r
+#         elif via == "checkout":
+#             # using `sno checkout --force`
+
+#             # this should error
+#             r = cli_runner.invoke(["checkout", "HEAD"])
+#             assert r.exit_code == 1, r
+
+#             change_count = db.execute(
+#                 """SELECT COUNT(*) FROM ".sno-track";"""
+#             ).fetchone()[0]
+#             assert change_count == (1 + 4 + 5 + 2)
+
+#             # do again with --force
+#             r = cli_runner.invoke(["checkout", "--force", "HEAD"])
+#             assert r.exit_code == 0, r
+#         else:
+#             raise NotImplementedError(f"via={via}")
+
+#         change_count = db.execute(
+#             """SELECT COUNT(*) FROM ".sno-track";"""
+#         ).fetchone()[0]
+#         assert change_count == 0
+
+#         h_after = H.db_table_hash(db, layer, pk_field)
+#         if h_before != h_after:
+#             r = db.execute(
+#                 f"SELECT {pk_field} FROM {layer} WHERE {pk_field}=?;", [rec[pk_field]]
+#             )
+#             if r.fetchone():
+#                 print(
+#                     "E: Newly inserted row is still there ({pk_field}={rec[pk_field]})"
+#                 )
+#             r = db.execute(
+#                 f"SELECT COUNT(*) FROM {layer} WHERE {pk_field} < ?;", [del_pk]
+#             )
+#             if r.fetchone()[0] != 4:
+#                 print("E: Deleted rows {pk_field}<{del_pk} still missing")
+#             r = db.execute(
+#                 f"SELECT COUNT(*) FROM {layer} WHERE {upd_field} = ?;",
+#                 [upd_field_value],
+#             )
+#             if r.fetchone()[0] != 0:
+#                 print("E: Updated rows not reset")
+#             r = db.execute(f"SELECT {pk_field} FROM {layer} WHERE {pk_field} = 9998;")
+#             if r.fetchone():
+#                 print(
+#                     "E: Updated pk row is still there ({pk_field}={id_chg_pk} -> 9998)"
+#                 )
+#             r = db.execute(
+#                 f"SELECT {pk_field} FROM {layer} WHERE {pk_field} = ?;", [id_chg_pk]
+#             )
+#             if not r.fetchone():
+#                 print("E: Updated pk row is missing ({pk_field}={id_chg_pk})")
+
+#         assert h_before == h_after
+
+
+# def test_geopackage_locking_edit(
+#     data_working_copy, geopackage, cli_runner, monkeypatch
+# ):
+#     with data_working_copy("points") as (repo, wc):
+#         db = geopackage(wc)
+
+#         is_checked = False
+#         orig_func = sno.working_copy.WorkingCopy_GPKG_1.write_features
+
+#         def _wrap(*args, **kwargs):
+#             nonlocal is_checked
+#             if not is_checked:
+#                 with pytest.raises(
+#                     sqlite3.OperationalError, match=r"database is locked"
+#                 ):
+#                     db.execute("UPDATE gpkg_contents SET table_name=table_name;")
+#                 is_checked = True
+
+#             return orig_func(*args, **kwargs)
+
+#         monkeypatch.setattr(sno.working_copy.WorkingCopy_GPKG_1, "write_features", _wrap)
+
+#         r = cli_runner.invoke(["checkout", H.POINTS_HEAD1_SHA])
+#         assert r.exit_code == 0, r
+#         assert is_checked
+
+#         assert H.last_change_time(db) == "2019-06-11T11:03:58.000000Z"
+
+
+# def test_workingcopy_set_path(data_working_copy, cli_runner, tmp_path):
+#     with data_working_copy("points") as (repo_path, wc):
+#         repo = pygit2.Repository(str(repo_path))
+
+#         r = cli_runner.invoke(["workingcopy-set-path", "/thingz.gpkg"])
+#         assert r.exit_code == 2, r
+
+#         # relative path 1
+#         new_path = Path("new-thingz.gpkg")
+#         wc.rename(new_path)
+#         assert new_path.exists()
+#         r = cli_runner.invoke(["workingcopy-set-path", new_path])
+#         assert r.exit_code == 0, r
+#         wc = new_path
+
+#         assert repo.config["sno.workingcopy.path"] == str(new_path)
+
+#         # relative path 2
+#         new_path = Path("other-thingz.gpkg")
+#         wc.rename(new_path)
+#         assert new_path.exists()
+#         r = cli_runner.invoke(
+#             ["workingcopy-set-path", Path("../points") / new_path]
+#         )
+#         assert r.exit_code == 0, r
+#         wc = new_path
+
+#         assert repo.config["sno.workingcopy.path"] == str(new_path)
+
+#         # abs path
+#         new_path = tmp_path / "thingz.gpkg"
+#         wc.rename(new_path)
+#         assert new_path.exists()
+#         r = cli_runner.invoke(["workingcopy-set-path", new_path])
+#         assert r.exit_code == 0, r
+
+#         assert repo.config["sno.workingcopy.path"] == str(new_path)
+
+
+# @pytest.mark.parametrize(
+#     "source",
+#     [
+#         pytest.param([], id="head"),
+#         pytest.param(["-s", H.POINTS_HEAD_SHA], id="prev"),
+#     ],
+# )
+# @pytest.mark.parametrize(
+#     "pathspec",
+#     [
+#         pytest.param([], id="all"),
+#         pytest.param(["bob"], id="exclude"),
+#     ],
+# )
+# def test_restore(source, pathspec, data_working_copy, cli_runner, geopackage):
+#     with data_working_copy("points", force_new=True) as (repo_dir, wc):
+#         layer = H.POINTS_LAYER
+#         pk_field = H.POINTS_LAYER_PK
+#         rec = H.POINTS_RECORD
+#         sql = H.POINTS_INSERT
+#         del_pk = 5
+#         upd_field = "t50_fid"
+#         upd_field_value = 888_888
+#         upd_pk_range = (10, 15)
+#         id_chg_pk = 20
+
+#         db = geopackage(wc)
+#         repo = pygit2.Repository(str(repo_dir))
+
+#         # make some changes
+#         with db:
+#             cur = db.cursor()
+#             cur.execute(f"UPDATE {H.POINTS_LAYER} SET fid=30000 WHERE fid=300;")
+#             assert cur.rowcount == 1
+
+#         r = cli_runner.invoke(["commit", "-m", "test1"])
+#         assert r.exit_code == 0, r
+
+#         new_commit = repo.head.peel(pygit2.Commit).hex
+#         assert new_commit != H.POINTS_HEAD_SHA
+#         print(f"Original commit={H.POINTS_HEAD_SHA} New commit={new_commit}")
+
+#         with db:
+#             cur = db.cursor()
+#             try:
+#                 cur.execute(sql, rec)
+#             except sqlite3.OperationalError:
+#                 print(sql, rec)
+#                 raise
+#             assert cur.rowcount == 1
+
+#             cur.execute(f"DELETE FROM {layer} WHERE {pk_field} < {del_pk};")
+#             assert cur.rowcount == 4
+#             cur.execute(
+#                 f"UPDATE {layer} SET {upd_field} = ? WHERE {pk_field}>=? AND {pk_field}<?;",
+#                 [upd_field_value, upd_pk_range[0], upd_pk_range[1]],
+#             )
+#             assert cur.rowcount == 5
+#             cur.execute(
+#                 f"UPDATE {layer} SET {pk_field}=? WHERE {pk_field}=?;",
+#                 [9998, id_chg_pk],
+#             )
+#             assert cur.rowcount == 1
+
+#             changes_pre = [r[0] for r in db.execute(
+#                 'SELECT pk FROM ".sno-track" ORDER BY CAST(pk AS INTEGER);'
+#             )]
+#             # .sno-track stores pk as strings
+#             assert changes_pre == ['1', '2', '3', '4', '10', '11', '12', '13', '14', '20', '9998', '9999']
+
+#         # using `sno restore
+#         r = cli_runner.invoke(["restore"] + source + pathspec)
+#         assert r.exit_code == 0, r
+
+#         changes_post = [r[0] for r in db.execute(
+#             'SELECT pk FROM ".sno-track" ORDER BY CAST(pk AS INTEGER);'
+#         )]
+
+#         r = db.execute(f"""SELECT value FROM ".sno-meta" WHERE key = 'tree' AND table_name='*';""")
+#         head_sha = r.fetchone()[0]
+
+#         if pathspec:
+#             # we restore'd paths other than our test dataset, so all the changes should still be there
+#             assert changes_post == changes_pre
+
+#             if head_sha != new_commit:
+#                 print(f"E: Bad Tree? {head_sha}")
+
+#             return
+
+#         if source:
+#             assert changes_post == ['300', '30000']
+
+#             if head_sha != H.POINTS_HEAD_SHA:
+#                 print(f"E: Bad Tree? {head_sha}")
+
+#             r = db.execute(f"SELECT {pk_field} FROM {layer} WHERE {pk_field} = 300;")
+#             if not r.fetchone():
+#                 print("E: Previous PK bad? ({pk_field}=300)")
+#             return
+
+#         assert changes_post == []
+
+#         if head_sha != new_commit:
+#             print(f"E: Bad Tree? {head_sha}")
+
+#         r = db.execute(f"""SELECT value FROM ".sno-meta" WHERE key = 'tree' AND table_name='*';""")
+#         head_sha = r.fetchone()[0]
+#         if head_sha != new_commit:
+#             print(f"E: Bad Tree? {head_sha}")
+
+#         r = db.execute(
+#             f"SELECT {pk_field} FROM {layer} WHERE {pk_field}=?;", [rec[pk_field]]
+#         )
+#         if r.fetchone():
+#             print(
+#                 "E: Newly inserted row is still there ({pk_field}={rec[pk_field]})"
+#             )
+#         r = db.execute(
+#             f"SELECT COUNT(*) FROM {layer} WHERE {pk_field} < ?;", [del_pk]
+#         )
+#         if r.fetchone()[0] != 4:
+#             print("E: Deleted rows {pk_field}<{del_pk} still missing")
+#         r = db.execute(
+#             f"SELECT COUNT(*) FROM {layer} WHERE {upd_field} = ?;",
+#             [upd_field_value],
+#         )
+#         if r.fetchone()[0] != 0:
+#             print("E: Updated rows not reset")
+#         r = db.execute(f"SELECT {pk_field} FROM {layer} WHERE {pk_field} = 9998;")
+#         if r.fetchone():
+#             print(
+#                 "E: Updated pk row is still there ({pk_field}={id_chg_pk} -> 9998)"
+#             )
+#         r = db.execute(
+#             f"SELECT {pk_field} FROM {layer} WHERE {pk_field} = ?;", [id_chg_pk]
+#         )
+#         if not r.fetchone():
+#             print("E: Updated pk row is missing ({pk_field}={id_chg_pk})")
+
+#         r = db.execute(f"SELECT {pk_field} FROM {layer} WHERE {pk_field} = 300;")
+#         if not r.fetchone():
+#             print("E: Previous PK bad? ({pk_field}=300)")
+
+
+# def test_delete_branch(data_working_copy, cli_runner):
+#     with data_working_copy("points") as (repo_path, wc):
+#         # prevent deleting the current branch
+#         r = cli_runner.invoke(["branch", "-d", "master"])
+#         assert r.exit_code == 1, r
+#         assert "Cannot delete" in r.stdout
+
+#         r = cli_runner.invoke(["checkout", "-b", "test"])
+#         assert r.exit_code == 0, r
+
+#         r = cli_runner.invoke(["branch", "-d", "test"])
+#         assert r.exit_code == 1, r
+
+#         r = cli_runner.invoke(["checkout", "master"])
+#         assert r.exit_code == 0, r
+
+#         r = cli_runner.invoke(["branch", "-d", "test"])
+#         assert r.exit_code == 0, r

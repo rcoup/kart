@@ -6,18 +6,22 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
 import time
+import warnings
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from click.testing import CliRunner
 
 import apsw
+import psycopg2
 import pygit2
-
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 pytest_plugins = ["helpers_namespace"]
 
@@ -38,6 +42,13 @@ def pytest_addoption(parser):
         default=False,
         help="Allow calling pytest.set_trace() within Click commands",
     )
+
+
+def pytest_itemcollected(item):
+    """ Auto-add mark to tests using the PostgreSQL fixtures """
+    # fixturenames contains indirect fixtures too
+    if "postgresql" in item.fixturenames:
+        item.add_marker("pg")
 
 
 # https://github.com/pytest-dev/pytest/issues/363
@@ -83,6 +94,71 @@ def git_user_config(monkeypatch_session, tmp_path_factory, request):
     assert global_cfg["user.name"] == USER_NAME
 
     return (USER_EMAIL, USER_NAME, home)
+
+
+def _build_pg_url(ip, port):
+    return f"postgresql://postgres@{ip}:{port}/postgres"
+
+
+def postgres_ready(ip_address, port):
+    # this kinda works...
+    try:
+        with socket.create_connection((ip_address, port), timeout=1):
+            dbconn = psycopg2.connect(
+                _build_pg_url(ip_address, port), connect_timeout=1
+            )
+            dbconn.close()
+            return True
+    except (OSError, psycopg2.Error):
+        return False
+
+
+@pytest.fixture(scope="session")
+def postgresql(docker_services):
+    docker_services.start("postgis")
+    dbport = docker_services.wait_for_service(
+        "postgis", 5432, check_server=postgres_ready
+    )
+
+    dburl = _build_pg_url(docker_services.docker_ip, dbport)
+    return dburl
+
+
+def _pgdb_scope(request, postgresql):
+    incr = getattr(postgis_db, "incr", 0)
+
+    dbparts = urlsplit(postgresql)
+    dbname = f"test{incr}"
+    setattr(postgis_db, "incr", incr + 1)
+
+    db = psycopg2.connect(postgresql)
+    db.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    with db.cursor() as cur:
+        cur.execute(f"CREATE DATABASE {dbname};")
+        cur.execute(f"ALTER DATABASE {dbname} SET log_statement='ddl';")
+    db.close()
+
+    dburl = dbparts._replace(path=f"/{dbname}").geturl()
+    L.info("Created test database %s", dburl)
+
+    db = psycopg2.connect(dburl)
+    db.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    with db.cursor() as cur:
+        cur.execute(f"CREATE EXTENSION postgis;")
+    db.close()
+
+    return dburl
+
+
+@pytest.fixture
+def postgis_db(request, postgresql):
+    return _pgdb_scope(request, postgresql)
+
+
+@pytest.fixture(scope="module")
+def postgis_db_module(request, postgresql):
+    # would be nice if pytest got around to the 'any' scope
+    return _pgdb_scope(request, postgresql)
 
 
 @contextlib.contextmanager
@@ -210,6 +286,45 @@ def data_working_copy(request, data_archive, tmp_path_factory, cli_runner):
 
 
 @pytest.fixture
+def data_working_copy_pg(request, data_archive, cli_runner, postgis_db):
+    """
+    Extract a repo archive with a PostGIS working copy
+    If the geopackage isn't in the archive, create it via `sno checkout`
+
+    Context-manager produces a 2-tuple: (repository_path, dburl, schema)
+    """
+    from sno.structure import RepositoryStructure
+
+    incr = 0
+
+    @contextlib.contextmanager
+    def _data_working_copy(name, schema=None):
+        nonlocal incr
+
+        if schema:
+            checkout_path = f"{postgis_db}/{schema}"
+        else:
+            checkout_path = postgis_db
+
+        with data_archive(name) as repo_dir:
+            if name.endswith(".sno"):
+                name = name[:-5]
+
+            repo = pygit2.Repository(str(repo_dir))
+            rs = RepositoryStructure(repo)
+            if rs.working_copy:
+                del rs.working_copy
+
+            L.info("Checking out to %s", postgis_db)
+            r = cli_runner.invoke(["checkout", f"--path={checkout_path}"])
+            assert r.exit_code == 0, r
+            L.debug("Checkout result: %s", r)
+            yield repo_dir, postgis_db
+
+    return _data_working_copy
+
+
+@pytest.fixture
 def data_imported(cli_runner, data_archive, chdir, request, tmp_path_factory):
     """
     Extract a source geopackage archive, then import the table into a new repository.
@@ -269,17 +384,14 @@ def data_imported(cli_runner, data_archive, chdir, request, tmp_path_factory):
 def geopackage():
     """ Return a SQLite3 (APSW) db connection for the specified DB, with spatialite loaded """
 
-    def _geopackage(path, **kwargs):
-        from sno import spatialite_path
-        from sno.gpkg import Row
-
-        db = apsw.Connection(str(path), **kwargs)
-        db.setrowtrace(Row)
-        dbcur = db.cursor()
-        dbcur.execute("PRAGMA foreign_keys = ON;")
-        db.enableloadextension(True)
-        dbcur.execute("SELECT load_extension(?)", (spatialite_path,))
-        dbcur.execute("SELECT EnableGpkgMode();")
+    def _geopackage(path=":memory:", **kwargs):
+        db = sqlite3.connect(path, **kwargs)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys = ON;")
+        db.enable_load_extension(True)
+        db.execute("SELECT load_extension('mod_spatialite');")
+        if path != ":memory:":
+            db.execute("SELECT EnableGpkgMode();")
         return db
 
     return _geopackage
@@ -356,10 +468,10 @@ class TestHelpers:
     """
     POINTS_RECORD = {
         "fid": 9999,
-        "geom": "POINT(0 0)",
+        "geom": "SRID=4326;POINT(0 0)",
         "t50_fid": 9_999_999,
         "name_ascii": "Te Motu-a-kore",
-        "macronated": False,
+        "macronated": "N",
         "name": "Te Motu-a-kore",
     }
     POINTS_HEAD_SHA = "2a1b7be8bdef32aea1510668e3edccbc6d454852"
@@ -377,7 +489,7 @@ class TestHelpers:
     """
     POLYGONS_RECORD = {
         "id": 9_999_999,
-        "geom": "POLYGON((0 0, 0 0.001, 0.001 0.001, 0.001 0, 0 0))",
+        "geom": "SRID=4326;POLYGON((0 0, 0 0.001, 0.001 0.001, 0.001 0, 0 0))",
         "date_adjusted": "2019-07-05T13:04:00+01:00",
         "survey_reference": "Null Island™ 🗺",
         "adjusted_nodes": 123,
@@ -412,22 +524,49 @@ class TestHelpers:
     TABLE_HEAD_SHA = "03622015ea5a82bc75228de052d9c84bc6f41667"
 
     @classmethod
-    def last_change_time(cls, db, table=POINTS_LAYER):
+    def mogrify_sql(cls, dbcur, sqlite3_statement):
+        """ Convert a sqlite3 sql statement into a postgis one if that's where it's executing """
+        sql = sqlite3_statement
+        if isinstance(dbcur, psycopg2.extensions.cursor):
+            sql = re.sub(r":(\w+)", r"%(\1)s", sql)
+            sql = re.sub(r"\?", r"%s", sql)
+        return sql
+
+    @classmethod
+    def gpkg_last_change_time(cls, dbcur, table=POINTS_LAYER):
         """
         Get the last change time from the GeoPackage DB.
         This is the same as the commit time.
         """
-        return (
-            db.cursor()
-            .execute(
-                f"SELECT last_change FROM gpkg_contents WHERE table_name=?;", [table],
-            )
-            .fetchone()[0]
+        if isinstance(dbcur, sqlite3.Connection):
+            warnings.warn("Pass a cursor, not a connection", DeprecationWarning)
+            dbcur = dbcur.cursor()
+
+        dbcur.execute(
+            f"SELECT last_change FROM gpkg_contents WHERE table_name=?;", [table]
         )
+        return dbcur.fetchone()[0]
 
     @classmethod
-    def row_count(cls, db, table):
-        return db.cursor().execute(f'SELECT COUNT(*) FROM "{table}";').fetchone()[0]
+    def db_tree_sha(cls, dbcur, table="*"):
+        if isinstance(dbcur, sqlite3.Connection):
+            warnings.warn("Pass a cursor, not a connection", DeprecationWarning)
+            dbcur = dbcur.cursor()
+
+        sql = cls.mogrify_sql(
+            dbcur, "SELECT value FROM sno.meta WHERE table_name=? AND key='tree';"
+        )
+        dbcur.execute(sql, [table])
+        return dbcur.fetchone()[0]
+
+    @classmethod
+    def row_count(cls, dbcur, table):
+        if isinstance(dbcur, sqlite3.Connection):
+            warnings.warn("Pass a cursor, not a connection", DeprecationWarning)
+            dbcur = dbcur.cursor()
+
+        dbcur.execute(f'SELECT COUNT(*) FROM "{table}";')
+        return dbcur.fetchone()[0]
 
     @classmethod
     def clear_working_copy(cls, repo_path="."):
@@ -444,20 +583,21 @@ class TestHelpers:
             del repo.config["sno.workingcopy.version"]
 
     @classmethod
-    def db_table_hash(cls, db, table, pk=None):
+    def db_table_hash(cls, dbcur, table, pk=None):
         """ Calculate a SHA1 hash of the contents of a SQLite table """
+        if isinstance(dbcur, sqlite3.Connection):
+            warnings.warn("Pass a cursor, not a connection", DeprecationWarning)
+            dbcur = dbcur.cursor()
+
         if pk is None:
             pk = "ROWID"
 
         sql = f"SELECT * FROM {table} ORDER BY {pk};"
-        with db:
-            cur = db.cursor()
-            cur.execute(sql)
-            r = cur.fetchall()
-            h = hashlib.sha1()
-            for row in r:
-                h.update("🔸".join(repr(col) for col in row).encode("utf-8"))
-            return h.hexdigest()
+        r = dbcur.execute(sql)
+        h = hashlib.sha1()
+        for row in r:
+            h.update("🔸".join(repr(col) for col in row).encode("utf-8"))
+        return h.hexdigest()
 
     @classmethod
     def git_graph(cls, request, message, count=10, *paths):
@@ -492,7 +632,7 @@ class TestHelpers:
         return tuple(param_ids)
 
     @classmethod
-    def verify_gpkg_extent(cls, db, table):
+    def gpkg_verify_extent(cls, db, table):
         """ Check the aggregate layer extent from the table matches the values in gpkg_contents """
         dbcur = db.cursor()
         r = dbcur.execute(
@@ -535,19 +675,18 @@ def insert(request, cli_runner):
     H = pytest.helpers.helpers()
 
     def func(db, layer=None, commit=True, reset_index=None):
+        dbcur = db.cursor()
+
         if reset_index is not None:
             func.index = reset_index
 
         if layer is None:
-            # autodetect
-            layer = (
-                db.cursor()
-                .execute(
-                    "SELECT table_name FROM gpkg_contents WHERE table_name IN (?,?,?) LIMIT 1",
-                    [H.POINTS_LAYER, H.POLYGONS_LAYER, H.TABLE_LAYER],
-                )
-                .fetchone()[0]
+            # autodetect (GPKG only)
+            dbcur.execute(
+                "SELECT table_name FROM gpkg_contents WHERE table_name IN (?,?,?) LIMIT 1",
+                [H.POINTS_LAYER, H.POLYGONS_LAYER, H.TABLE_LAYER],
             )
+            layer = dbcur.fetchone()[0]
 
         if layer == H.POINTS_LAYER:
             rec = H.POINTS_RECORD.copy()
