@@ -449,7 +449,7 @@ def init(ctx, import_from, do_checkout, directory):
 
             checkout.checkout_new(
                 repo_structure=structure.RepositoryStructure(repo),
-                path=wc_path.name,
+                path=f"gpkg://{wc_path.name}",
                 commit=repo.head.peel(pygit2.Commit),
             )
     else:

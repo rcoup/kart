@@ -91,40 +91,45 @@ class WorkingCopyGPKG(WorkingCopy):
             self._db = gpkg.db(self.full_path,)
             dbcur = self._db.cursor()
 
-            if bulk:
-                L.debug("Invoking bulk mode %s", bulk)
-                orig_journal = dbcur.execute("PRAGMA journal_mode;").fetchone()[0]
-                orig_locking = dbcur.execute("PRAGMA locking_mode;").fetchone()[0]
+            # if bulk:
+            #     L.debug("Invoking bulk mode %s", bulk)
+            #     orig_journal = dbcur.execute("PRAGMA journal_mode;").fetchone()[0]
+            #     orig_locking = dbcur.execute("PRAGMA locking_mode;").fetchone()[0]
 
-                dbcur.execute("PRAGMA synchronous = OFF;")
-                dbcur.execute("PRAGMA cache_size = -1048576;")  # -KiB => 1GiB
+            #     dbcur.execute("PRAGMA synchronous = OFF;")
+            #     dbcur.execute("PRAGMA cache_size = -1048576;")  # -KiB => 1GiB
 
-                if bulk >= 2:
-                    dbcur.execute("PRAGMA journal_mode = MEMORY;")
-                    dbcur.execute("PRAGMA locking_mode = EXCLUSIVE;")
+            #     if bulk >= 2:
+            #         dbcur.execute("PRAGMA journal_mode = MEMORY;")
+            #         dbcur.execute("PRAGMA locking_mode = EXCLUSIVE;")
 
             try:
                 with self._db:
                     yield self._db
-            except Exception:
+            except Exception as e:
+                L.exception(str(e), exc_info=True)
                 raise
             finally:
-                if bulk:
-                    L.debug(
-                        "Disabling bulk %s mode (Journal: %s; Locking: %s)",
-                        bulk,
-                        orig_journal,
-                        orig_locking,
-                    )
-                    dbcur.execute("PRAGMA synchronous = ON;")
-                    dbcur.execute("PRAGMA cache_size = -2000;")  # default
+                # if bulk:
+                #     L.debug(
+                #         "Disabling bulk %s mode (Journal: %s; Locking: %s)",
+                #         bulk,
+                #         orig_journal,
+                #         orig_locking,
+                #     )
+                #     dbcur.execute("PRAGMA synchronous = NORMAL;")
+                #     dbcur.execute("PRAGMA cache_size = -2000;")  # default
 
-                    if bulk >= 2:
-                        dbcur.execute(f"PRAGMA locking_mode = {orig_locking};")
-                        dbcur.execute(
-                            "SELECT name FROM sqlite_master LIMIT 1;"
-                        )  # unlock
-                        dbcur.execute(f"PRAGMA journal_mode = {orig_journal};")
+                #     if bulk >= 2:
+                #         dbcur.execute(f"PRAGMA locking_mode = {orig_locking};")
+                #         dbcur.execute(
+                #             "SELECT name FROM sqlite_master LIMIT 1;"
+                #         )  # unlock
+                #         dbcur.execute(f"PRAGMA journal_mode = {orig_journal};")
+                #         dbcur.execute(
+                #             "SELECT name FROM sqlite_master LIMIT 1;"
+                #         )  # unlock
+                pass
 
                 del dbcur
                 self._db.close()
@@ -904,7 +909,7 @@ class WorkingCopy_GPKG_1(WorkingCopyGPKG):
                             SET
                                 last_change=?,
                                 min_x=(SELECT min_x FROM _BBOX),
-                                min_y=(SELECT min_y FROM _BBOX),
+                               min_y=(SELECT min_y FROM _BBOX),
                                 max_x=(SELECT max_x FROM _BBOX),
                                 max_y=(SELECT max_y FROM _BBOX)
                             WHERE

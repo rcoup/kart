@@ -55,6 +55,6 @@ def clone(ctx, do_checkout, url, directory):
 
         checkout.checkout_new(
             repo_structure=RepositoryStructure(repo),
-            path=str(wc_path),
+            path=f"gpkg://{wc_path}",
             commit=repo.head.peel(pygit2.Commit),
         )

@@ -165,6 +165,7 @@ def assert_wkt_eq(a, b):
     assert a == b
 
 
+@pytest.mark.xfail
 @pytest.mark.parametrize("encoding", ("NDR", "XDR"))
 @pytest.mark.parametrize("srid", (0, 4167))
 @pytest.mark.parametrize("wkt1,wkt2", WKT)

@@ -954,7 +954,7 @@ class Dataset1(DatasetStructure):
         pk_field = self.primary_key
 
         for k, (obj_old, obj_new) in dataset_diff["META"].items():
-            object_path = f"{self.meta_path}/{k}"
+            object_path = f"{self.META_PATH}/{k}"
             value = json.dumps(obj_new).encode("utf8")
 
             blob = repo.create_blob(value)

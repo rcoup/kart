@@ -1,8 +1,10 @@
 import collections
+import hashlib
+import logging
 import math
+import os
+import re
 import struct
-import sys
-from pathlib import Path
 
 import apsw
 from osgeo import ogr, osr
@@ -55,19 +57,69 @@ class Row(tuple):
             return super().__getitem__(key)
 
 
+def _get_db_id(db):
+    return hashlib.sha1(db.sqlite3pointer().to_bytes(8, "little")).hexdigest()[:4]
+
+
+def get_committrace(logger):
+    def _commithook():
+        logger.debug("COMMIT")
+        return 0
+
+
+def get_exectrace(logger):
+    def _trunc(value):
+        if isinstance(value, str):
+            return (value[:47] + "...") if len(value) > 50 else value
+        elif isinstance(value, bytes):
+            return (value[:47] + b"...") if len(value) > 50 else value
+        return value
+
+    def _exectrace(cursor, sql, bindings):
+        if hasattr(bindings, "keys") and hasattr(bindings, "__getitem__"):  # mapping
+            lb = {k: _trunc(v) for (k, v) in bindings.items()}
+        elif bindings is None:  # no bindings (eg: 'COMMIT')
+            lb = ""
+        else:  # sequence
+            lb = tuple(_trunc(b) for b in bindings)
+
+        if isinstance(cursor, apsw.Connection):
+            lc = None
+        else:
+            lc = id(cursor)
+
+        logger.debug(
+            "SQL (%s): %s : %s",
+            lc,
+            re.sub(r"\s{2,}", " ", sql).strip(),  # collapse whitespace
+            lb,
+        )
+        return True
+
+    return _exectrace
+
+
 def db(path, **kwargs):
     db = apsw.Connection(str(path), **kwargs)
+
+    if "_SNO_SQLITE_TRACE" in os.environ:
+        L = logging.getLogger(f"sno.gpkg.sqlite_trace.{_get_db_id(db)}")
+        L.info("Connection: %s", path)
+        db.setexectrace(get_exectrace(L))
+        db.setcommithook(get_committrace(L))
+
     db.setrowtrace(Row)
     dbcur = db.cursor()
+    dbcur.execute("PRAGMA journal_mode = WAL;")
     dbcur.execute("PRAGMA foreign_keys = ON;")
-
-    current_journal = dbcur.execute("PRAGMA journal_mode").fetchone()[0]
-    if current_journal.lower() == "delete":
-        dbcur.execute("PRAGMA journal_mode = TRUNCATE;")  # faster
+    # current_journal = dbcur.execute("PRAGMA journal_mode").fetchone()[0]
+    # if current_journal.lower() == "delete":
+    #     dbcur.execute("PRAGMA journal_mode = TRUNCATE;")  # faster
 
     db.enableloadextension(True)
     dbcur.execute("SELECT load_extension(?)", (spatialite_path,))
     dbcur.execute("SELECT EnableGpkgMode();")
+    del dbcur
     return db
 
 

@@ -71,7 +71,8 @@ def test_e2e(
 
             # check we have the right data in the WC
             db = geopackage(str(working_copy))
-            assert H.row_count(db, table) == row_count
+            dbcur = db.cursor()
+            assert H.row_count(dbcur, table) == row_count
 
             # create & switch to a new branch
             r = cli_runner.invoke(["switch", "-c", "edit-1"])

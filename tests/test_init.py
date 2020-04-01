@@ -168,7 +168,7 @@ def test_init_import(
             print("workingcopy at", wc)
 
             assert repo.config["sno.workingcopy.version"] == "1"
-            assert repo.config["sno.workingcopy.path"] == f"{wc.name}"
+            assert repo.config["sno.workingcopy.path"] == f"gpkg://{wc.name}"
 
             db = geopackage(wc)
             assert H.row_count(db, table) > 0
@@ -182,7 +182,7 @@ def test_init_import(
             )
             assert wc_tree_id == repo.head.peel(pygit2.Tree).hex
 
-            H.verify_gpkg_extent(db, table)
+            H.gpkg_verify_extent(db, table)
 
 
 def test_init_import_name_clash(data_archive, cli_runner, geopackage):
@@ -206,7 +206,7 @@ def test_init_import_name_clash(data_archive, cli_runner, geopackage):
         print("workingcopy at", wc)
 
         assert repo.config["sno.workingcopy.version"] == "1"
-        assert repo.config["sno.workingcopy.path"] == "editing.gpkg"
+        assert repo.config["sno.workingcopy.path"] == "gpkg://editing.gpkg"
 
         db = geopackage(wc)
         dbcur = db.cursor()

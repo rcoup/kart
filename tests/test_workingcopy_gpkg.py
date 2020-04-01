@@ -67,12 +67,13 @@ def test_checkout_detached(data_working_copy, cli_runner, geopackage):
     """ Checkout a working copy to edit """
     with data_working_copy("points") as (repo_dir, wc):
         db = geopackage(wc)
-        assert H.last_change_time(db) == "2019-06-20T14:28:33.000000Z"
+        dbcur = db.cursor()
+        assert H.gpkg_last_change_time(dbcur) == "2019-06-20T14:28:33.000000Z"
 
         # checkout the previous commit
         r = cli_runner.invoke(["checkout", H.POINTS_HEAD1_SHA[:8]])
         assert r.exit_code == 0, r
-        assert H.last_change_time(db) == "2019-06-11T11:03:58.000000Z"
+        assert H.gpkg_last_change_time(dbcur) == "2019-06-11T11:03:58.000000Z"
 
         repo = pygit2.Repository(str(repo_dir))
         assert repo.head.target.hex == H.POINTS_HEAD1_SHA
@@ -83,6 +84,7 @@ def test_checkout_detached(data_working_copy, cli_runner, geopackage):
 def test_checkout_references(data_working_copy, cli_runner, geopackage, tmp_path):
     with data_working_copy("points") as (repo_dir, wc):
         db = geopackage(wc)
+        dbcur = db.cursor()
         repo = pygit2.Repository(str(repo_dir))
 
         # create a tag
@@ -104,49 +106,49 @@ def test_checkout_references(data_working_copy, cli_runner, geopackage, tmp_path
         assert r.exit_code == 0, r
         assert r_head() == ("refs/heads/master", H.POINTS_HEAD_SHA)
         assert not repo.head_is_detached
-        assert H.last_change_time(db) == "2019-06-20T14:28:33.000000Z"
+        assert H.gpkg_last_change_time(dbcur) == "2019-06-20T14:28:33.000000Z"
 
         # checkout the HEAD-but-1 commit
         r = cli_runner.invoke(["checkout", "HEAD~1"])
         assert r.exit_code == 0, r
         assert r_head() == ("HEAD", H.POINTS_HEAD1_SHA)
         assert repo.head_is_detached
-        assert H.last_change_time(db) == "2019-06-11T11:03:58.000000Z"
+        assert H.gpkg_last_change_time(dbcur) == "2019-06-11T11:03:58.000000Z"
 
         # checkout the master HEAD via branch-name
         r = cli_runner.invoke(["checkout", "master"])
         assert r.exit_code == 0, r
         assert r_head() == ("refs/heads/master", H.POINTS_HEAD_SHA)
         assert not repo.head_is_detached
-        assert H.last_change_time(db) == "2019-06-20T14:28:33.000000Z"
+        assert H.gpkg_last_change_time(dbcur) == "2019-06-20T14:28:33.000000Z"
 
         # checkout a short-sha commit
         r = cli_runner.invoke(["checkout", H.POINTS_HEAD1_SHA[:8]])
         assert r.exit_code == 0, r
         assert r_head() == ("HEAD", H.POINTS_HEAD1_SHA)
         assert repo.head_is_detached
-        assert H.last_change_time(db) == "2019-06-11T11:03:58.000000Z"
+        assert H.gpkg_last_change_time(dbcur) == "2019-06-11T11:03:58.000000Z"
 
         # checkout the master HEAD via refspec
         r = cli_runner.invoke(["checkout", "refs/heads/master"])
         assert r.exit_code == 0, r
         assert r_head() == ("refs/heads/master", H.POINTS_HEAD_SHA)
         assert not repo.head_is_detached
-        assert H.last_change_time(db) == "2019-06-20T14:28:33.000000Z"
+        assert H.gpkg_last_change_time(dbcur) == "2019-06-20T14:28:33.000000Z"
 
         # checkout the tag
         r = cli_runner.invoke(["checkout", "version1"])
         assert r.exit_code == 0, r
         assert r_head() == ("HEAD", H.POINTS_HEAD_SHA)
         assert repo.head_is_detached
-        assert H.last_change_time(db) == "2019-06-20T14:28:33.000000Z"
+        assert H.gpkg_last_change_time(dbcur) == "2019-06-20T14:28:33.000000Z"
 
         # checkout the remote branch
         r = cli_runner.invoke(["checkout", "myremote/master"])
         assert r.exit_code == 0, r
         assert r_head() == ("HEAD", H.POINTS_HEAD_SHA)
         assert repo.head_is_detached
-        assert H.last_change_time(db) == "2019-06-20T14:28:33.000000Z"
+        assert H.gpkg_last_change_time(dbcur) == "2019-06-20T14:28:33.000000Z"
 
 
 def test_checkout_branch(data_working_copy, geopackage, cli_runner, tmp_path):
@@ -460,7 +462,8 @@ def test_geopackage_locking_edit(
         assert r.exit_code == 0, r
         assert is_checked
 
-        assert H.last_change_time(db) == "2019-06-11T11:03:58.000000Z"
+        dbcur = db.cursor()
+        assert H.gpkg_last_change_time(dbcur) == "2019-06-11T11:03:58.000000Z"
 
 
 def test_workingcopy_set_path(data_working_copy, cli_runner, tmp_path):

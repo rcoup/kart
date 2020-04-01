@@ -7,8 +7,8 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
-import sys
 import tarfile
 import time
 import warnings
@@ -42,6 +42,12 @@ def pytest_addoption(parser):
         default=False,
         help="Allow calling pytest.set_trace() within Click commands",
     )
+    parser.addoption(
+        "--sqlite-trace",
+        action="store_true",
+        default=False,
+        help="Trace all executed SQLite SQL statements",
+    )
 
 
 def pytest_itemcollected(item):
@@ -59,6 +65,12 @@ def monkeypatch_session(request):
     mpatch = MonkeyPatch()
     yield mpatch
     mpatch.undo()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def sqlite_trace(request, monkeypatch_session):
+    if request.config.getoption("--sqlite-trace"):
+        monkeypatch_session.setenv("_SNO_SQLITE_TRACE", "1")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -381,17 +393,28 @@ def data_imported(cli_runner, data_archive, chdir, request, tmp_path_factory):
 
 
 @pytest.fixture
-def geopackage():
+def geopackage(request):
     """ Return a SQLite3 (APSW) db connection for the specified DB, with spatialite loaded """
 
     def _geopackage(path=":memory:", **kwargs):
-        db = sqlite3.connect(path, **kwargs)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA foreign_keys = ON;")
-        db.enable_load_extension(True)
-        db.execute("SELECT load_extension('mod_spatialite');")
+        from sno import spatialite_path
+        from sno.gpkg import Row, get_exectrace, get_committrace, _get_db_id
+
+        db = apsw.Connection(str(path), **kwargs)
+        if request.config.getoption("--sqlite-trace"):
+            L = logging.getLogger(f"sno.tests.sqlite_trace.{_get_db_id(db)}")
+            L.info("Connection: %s", path)
+            db.setexectrace(get_exectrace(L))
+            db.setcommithook(get_committrace(L))
+
+        db.setrowtrace(Row)
+        dbcur = db.cursor()
+        dbcur.execute("PRAGMA journal_mode = WAL;")
+        dbcur.execute("PRAGMA foreign_keys = ON;")
+        db.enableloadextension(True)
+        dbcur.execute("SELECT load_extension(?)", (spatialite_path,))
         if path != ":memory:":
-            db.execute("SELECT EnableGpkgMode();")
+            dbcur.execute("SELECT EnableGpkgMode();")
         return db
 
     return _geopackage
@@ -538,7 +561,7 @@ class TestHelpers:
         Get the last change time from the GeoPackage DB.
         This is the same as the commit time.
         """
-        if isinstance(dbcur, sqlite3.Connection):
+        if isinstance(dbcur, (sqlite3.Connection, apsw.Connection)):
             warnings.warn("Pass a cursor, not a connection", DeprecationWarning)
             dbcur = dbcur.cursor()
 
@@ -549,7 +572,7 @@ class TestHelpers:
 
     @classmethod
     def db_tree_sha(cls, dbcur, table="*"):
-        if isinstance(dbcur, sqlite3.Connection):
+        if isinstance(dbcur, (sqlite3.Connection, apsw.Connection)):
             warnings.warn("Pass a cursor, not a connection", DeprecationWarning)
             dbcur = dbcur.cursor()
 
@@ -561,7 +584,7 @@ class TestHelpers:
 
     @classmethod
     def row_count(cls, dbcur, table):
-        if isinstance(dbcur, sqlite3.Connection):
+        if isinstance(dbcur, (sqlite3.Connection, apsw.Connection)):
             warnings.warn("Pass a cursor, not a connection", DeprecationWarning)
             dbcur = dbcur.cursor()
 
@@ -585,7 +608,7 @@ class TestHelpers:
     @classmethod
     def db_table_hash(cls, dbcur, table, pk=None):
         """ Calculate a SHA1 hash of the contents of a SQLite table """
-        if isinstance(dbcur, sqlite3.Connection):
+        if isinstance(dbcur, (sqlite3.Connection, apsw.Connection)):
             warnings.warn("Pass a cursor, not a connection", DeprecationWarning)
             dbcur = dbcur.cursor()
 
@@ -675,6 +698,7 @@ def insert(request, cli_runner):
     H = pytest.helpers.helpers()
 
     def func(db, layer=None, commit=True, reset_index=None):
+        L.warn("insert() called")
         dbcur = db.cursor()
 
         if reset_index is not None:
@@ -710,21 +734,25 @@ def insert(request, cli_runner):
         new_pk = pk_start + func.index
         rec[pk_field] = new_pk
 
+        L.warn("Doing DB inserting")
         with db:
             cur = db.cursor()
             cur.execute(sql, rec)
             assert db.changes() == 1
             func.inserted_fids.append(new_pk)
+            L.warn("Committed the DB insert")
 
         func.index += 1
 
         if commit:
+            L.warn("Doing a sno commit")
             r = cli_runner.invoke(["commit", "-m", f"commit-{func.index}", "--json"])
             assert r.exit_code == 0, r
 
             commit_id = json.loads(r.stdout)["sno.commit/v1"]["commit"]
             return commit_id
         else:
+            L.warn("Skipping sno commit")
             return new_pk
 
     func.index = 0

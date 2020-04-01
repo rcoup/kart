@@ -360,7 +360,7 @@ class WorkingCopyPostgis(WorkingCopy):
                 return
             yield itertools.chain((first_el,), chunk_it)
 
-    def write_full(self, commit, *datasets):
+    def write_full(self, commit, *datasets, **kwargs):
         """
         Writes a full layer into a working-copy table
 
@@ -492,6 +492,12 @@ class WorkingCopyPostgis(WorkingCopy):
 
         return feat_count
 
+    def _db_to_repo_obj(self, dataset, db_obj):
+        geom_col = dataset.geom_column_name
+        if geom_col:
+            db_obj[geom_col] = gpkg.hexewkb_to_geom(db_obj[geom_col])
+        return db_obj
+
     def diff_db_to_tree(self, dataset, pk_filter=None):
         """
         Generates a diff between a working copy DB and the underlying repository tree
@@ -541,7 +547,7 @@ class WorkingCopyPostgis(WorkingCopy):
                 track_pk = row[0]
                 db_obj = {k: row[k] for k in row.keys() if k != ".__track_pk"}
 
-                d
+                self._db_to_repo_obj(dataset, db_obj)
 
                 try:
                     _, repo_obj = dataset.get_feature(track_pk, ogr_geoms=False)

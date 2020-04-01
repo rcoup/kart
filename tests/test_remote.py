@@ -53,7 +53,7 @@ def test_clone(working_copy, data_archive, tmp_path, cli_runner, chdir, geopacka
 
             table = H.POINTS_LAYER
             assert repo.config["sno.workingcopy.version"] == "1"
-            assert repo.config["sno.workingcopy.path"] == wc.name
+            assert repo.config["sno.workingcopy.path"] == f"gpkg://{wc.name}"
 
             db = geopackage(wc)
             dbcur = db.cursor()
