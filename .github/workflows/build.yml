@@ -62,7 +62,7 @@ jobs:
           echo 'verbose = off' >> $HOME/.wgetrc
           make -C vendor sources
           mkdir -p .cache/vendor-source
-          tar cvf .cache/vendor-source/vendor.tar vendor/*/*.tar.* vendor/*/*.zip
+          tar cvf .cache/vendor-source/vendor.tar vendor/*/*.tar.*
 
       #
       # python distribution

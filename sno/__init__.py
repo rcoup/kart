@@ -59,7 +59,14 @@ else:
 # GDAL Data
 if not is_windows:
     os.environ["GDAL_DATA"] = os.path.join(prefix, "share", "gdal")
+
+# Proj
+if not is_windows:
     os.environ["PROJ_LIB"] = os.path.join(prefix, "share", "proj")
+
+# Enable downloading conversion grids on-demand from the Proj CDN
+# Conversion grids are cached in a per-user directory by Proj: https://proj.org/usage/network.html
+os.environ["PROJ_NETWORK"] = "ON"
 
 # GDAL Error Handling
 from osgeo import gdal, ogr, osr

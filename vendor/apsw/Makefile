@@ -47,6 +47,7 @@ clean:
 .PHONY: cleaner
 cleaner: clean
 	-(cd src && python3 setup.py clean)
+	-$(RM) -r src/sqlite3
 
 .PHONY: cleanest
 cleanest: clean
@@ -90,18 +91,6 @@ source: $(sqlite_src)
 # APSW
 #
 
-.PHONY: py-fix-Darwin
-py-fix-Darwin:
-# 	for SO in src/build/lib.macosx*/apsw.*.so; do \
-# 		echo $$SO; \
-# 		install_name_tool \
-# 			-change "/usr/local/opt/sqlite/lib/libsqlite3.0.dylib" "@rpath/libsqlite3.0.dylib" \
-# 			"$$SO"; \
-# 	done
-
-.PHONY: py-fix-Linux
-py-fix-Linux:
-
 .PHONY: install
 install: $(sqlite_src)
 	@echo 'CFLAGS=$(CFLAGS) LDFLAGS=$(LDFLAGS) PY3=$(PY3)'
@@ -112,8 +101,6 @@ wheel: $(sqlite_src)
 	@echo 'CFLAGS=$(CFLAGS) LDFLAGS=$(LDFLAGS) PY3=$(PY3)'
 	cd src && python setup.py --no-user-cfg \
 		build $(APSW_BUILD_OPTS)
-
-	$(MAKE) py-fix-$(PLATFORM)
 
 	cd src && python setup.py  --no-user-cfg \
 		bdist_wheel -d $(abspath $@)

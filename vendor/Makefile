@@ -75,7 +75,7 @@ env:
 	env/bin/pip install -U $(PYDEPS)
 
 # dependencies
-$(lib-proj): $(lib-sqlite) proj_build
+$(lib-proj): $(lib-sqlite) $(lib-curl) proj_build
 $(lib-libgit2): libgit2_build
 $(lib-spatialite): $(lib-sqlite) $(lib-geos) $(lib-proj) spatialite_build
 

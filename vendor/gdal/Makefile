@@ -1,4 +1,4 @@
-GDAL_VERSION ?= 3.0.3
+GDAL_VERSION ?= 3.1.0
 SHELL = /bin/bash
 
 export PREFIX ?= $(abspath env)
@@ -194,10 +194,10 @@ lib-fix-Darwin:
 		-change $(SQLITE_PREFIX)/lib/libsqlite3.0.dylib @rpath/libsqlite3.0.dylib \
 		-change /usr/local/opt/geos/lib/libgeos_c.1.dylib @rpath/libgeos_c.1.dylib \
 		-change $(JSONC_PREFIX)/lib/libjson-c.4.dylib @rpath/libjson-c.4.dylib \
-		-change $(PROJ_PREFIX)/lib/libproj.15.dylib @rpath/libproj.15.dylib \
+		-change $(PROJ_PREFIX)/lib/libproj.19.dylib @rpath/libproj.19.dylib \
 		-change $(PG_PREFIX)/lib/libpq.5.dylib @rpath/libpq.5.dylib \
-		-id libgdal.26.dylib \
-		src/.libs/libgdal.26.dylib
+		-id libgdal.27.dylib \
+		src/.libs/libgdal.27.dylib
 
 	$(MAKE) print-lib-deps-$(PLATFORM)
 
@@ -234,7 +234,7 @@ py-fix-Darwin:
 	for SO in src/swig/python/build/lib.macosx*/osgeo/*.so; do \
 		echo $$SO; \
 		install_name_tool \
-			-change "libgdal.26.dylib" "@rpath/libgdal.26.dylib" \
+			-change "libgdal.27.dylib" "@rpath/libgdal.27.dylib" \
 			"$$SO"; \
 	done
 

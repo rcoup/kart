@@ -37,7 +37,7 @@ for M in */Makefile; do
     D=$(dirname "$M")
     mkdir -p "/build/$D"
     ln -s "$(pwd)/$M" "/build/$M"
-    find "$D" -maxdepth 1 \( -name "*.tar.*" -o -name "*.zip" \) -print -exec ln -s "$(pwd)"/{} "/build/$D/" \;
+    find "$D" -maxdepth 1 -name "*.tar.*" -print -exec ln -s "$(pwd)"/{} "/build/$D/" \;
 done
 cp -v sqlite/version.mk /build/sqlite/
 

@@ -1,4 +1,4 @@
-PROJ_VERSION ?= 6.3.0
+PROJ_VERSION ?= 7.0.1
 SHELL = /bin/bash
 
 export PREFIX ?= $(abspath env)
@@ -10,20 +10,17 @@ else
 endif
 
 PROJ_ARCHIVE := proj-$(PROJ_VERSION).tar.gz
-PROJ_DATUMGRID_ARCHIVES = proj-datumgrid-1.8.zip #\
-# 	proj-datumgrid-europe-1.5.zip \
-# 	proj-datumgrid-north-america-1.3.zip \
-# 	proj-datumgrid-oceania-1.1.zip \
-# 	proj-datumgrid-world-1.0.zip
 
 export PKG_CONFIG_PATH := $(realpath $(PREFIX)/lib/pkgconfig)
 ifeq ($(PLATFORM),Darwin)
 	CCACHE_PATH = /usr/local/opt/ccache/bin
 	LIBSUFFIX = dylib
 	export PKG_CONFIG_PATH += /usr/local/opt/sqlite/lib/pkgconfig
+	CURL_CONFIG = /usr/local/opt/curl/bin/curl-config
 else ifeq ($(PLATFORM),Linux)
 	CCACHE_PATH = /usr/lib/ccache
 	CCACHE_PATH := $(or $(CCACHE_PATH),/usr/lib64/ccache)
+	CURL_CONFIG := $(PREFIX)/bin/curl-config
 	LIBSUFFIX = so
 endif
 
@@ -68,23 +65,18 @@ clean-configure:
 $(PROJ_ARCHIVE):
 	wget https://download.osgeo.org/proj/$@ -O $@
 
-$(PROJ_DATUMGRID_ARCHIVES):
-	wget https://download.osgeo.org/proj/$@ -O $@
-
 .PHONY: archive
-archive: $(PROJ_ARCHIVE) $(PROJ_DATUMGRID_ARCHIVES)
+archive: $(PROJ_ARCHIVE)
 
 #
 # Extract Archives
 #
 
-src: $(PROJ_ARCHIVE) $(PROJ_DATUMGRID_ARCHIVES)
+src: $(PROJ_ARCHIVE)
 	rm -rf $@
 	mkdir -p $@
 	@echo "Extracting $(PROJ_ARCHIVE) ..."
 	tar xzf $(PROJ_ARCHIVE) --strip-components=1 -C $@
-	mkdir -p $@/data
-	$(foreach z,$(PROJ_DATUMGRID_ARCHIVES),unzip -q -o -d $@/data $(z);)
 
 .PHONY: source
 source: src
@@ -99,7 +91,10 @@ configure: clean-configure $(configure-proj)
 $(configure-proj): CFLAGS+=$(SQLITE_CFLAGS)
 $(configure-proj): LDFLAGS+=$(SQLITE_LDFLAGS)
 $(configure-proj): | src $(libs)
-	cd src/ && ./configure --prefix=$(PREFIX)
+	cd src/ && \
+	./configure \
+		--prefix=$(PREFIX) \
+		--with-curl=$(CURL_CONFIG)
 
 $(build-proj): $(configure-proj)
 	$(MAKE) -C src/ -j 2
@@ -108,6 +103,8 @@ $(build-proj): $(configure-proj)
 .PHONY: install
 install: $(build-proj)
 	$(MAKE) -C src/ install
+# 	@echo Installing proj-data ...
+# 	$(PREFIX)/bin/projsync --system-directory
 
 .PHONY: print-lib-deps
 print-lib-deps: print-lib-deps-$(PLATFORM)

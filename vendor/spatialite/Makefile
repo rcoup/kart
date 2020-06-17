@@ -118,7 +118,7 @@ $(build-spatialite): $(configure-spatialite)
 	fi
 ifeq ($(PLATFORM),Darwin)
 	install_name_tool \
-		-change $(PREFIX)/lib/libproj.15.dylib @rpath/libproj.15.dylib \
+		-change $(PREFIX)/lib/libproj.19.dylib @rpath/libproj.19.dylib \
 		-change libsqlite3.0.dylib @rpath/libsqlite3.0.dylib \
 		-change libgeos_c.1.dylib @rpath/libgeos_c.1.dylib \
 		-id mod_spatialite.7.so \
