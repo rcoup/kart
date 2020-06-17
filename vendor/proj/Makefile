@@ -15,7 +15,7 @@ export PKG_CONFIG_PATH := $(realpath $(PREFIX)/lib/pkgconfig)
 ifeq ($(PLATFORM),Darwin)
 	CCACHE_PATH = /usr/local/opt/ccache/bin
 	LIBSUFFIX = dylib
-	export PKG_CONFIG_PATH += /usr/local/opt/sqlite/lib/pkgconfig
+	export PKG_CONFIG_PATH += /usr/local/opt/sqlite/lib/pkgconfig:/usr/local/opt/libtiff/lib/pkgconfig
 	CURL_CONFIG = /usr/local/opt/curl/bin/curl-config
 else ifeq ($(PLATFORM),Linux)
 	CCACHE_PATH = /usr/lib/ccache
@@ -31,9 +31,6 @@ export PKG_CONFIG_PATH := $(realpath $(PREFIX)/lib/pkgconfig)
 
 build-proj := src/src/.libs/libproj.$(LIBSUFFIX)
 configure-proj = src/config.status
-
-libsqlite := $(PREFIX)/lib/libsqlite3.$(LIBSUFFIX)
-libs := $(libsqlite)
 
 # default target
 .PHONY: all
@@ -88,13 +85,12 @@ source: src
 .PHONY: configure
 configure: clean-configure $(configure-proj)
 
-$(configure-proj): CFLAGS+=$(SQLITE_CFLAGS)
-$(configure-proj): LDFLAGS+=$(SQLITE_LDFLAGS)
 $(configure-proj): | src $(libs)
 	cd src/ && \
 	./configure \
 		--prefix=$(PREFIX) \
-		--with-curl=$(CURL_CONFIG)
+		--with-curl=$(CURL_CONFIG) \
+		--enable-tiff
 
 $(build-proj): $(configure-proj)
 	$(MAKE) -C src/ -j 2

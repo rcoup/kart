@@ -37,7 +37,7 @@ export CERTIFI_SSL_CERT_FILE=$(abspath $(PREFIX)/lib/python3.7/site-packages/cer
 
 packages = proj jsonc geos gdal spatialite libgit2 pygit2 apsw psycopg2
 ifeq ($(PLATFORM),Linux)
-packages += sqlite spatialindex git curl libpq
+packages += sqlite spatialindex git curl libpq libtiff
 endif
 
 brew-deps := Brewfile.lock.json
@@ -51,6 +51,7 @@ lib-pq := env/lib/libpq.$(LIBSUFFIX)
 lib-sqlite := env/lib/libsqlite3.$(LIBSUFFIX)
 lib-git := env/bin/git
 lib-curl := env/lib/libcurl.$(LIBSUFFIX)
+lib-tiff := env/lib/libtiff.$(LIBSUFFIX)
 
 lib-spatialite := env/lib/mod_spatialite.$(LIBSUFFIX)
 lib-gdal := env/lib/python3.7/site-packages/osgeo/__init__.py
@@ -99,7 +100,7 @@ ifeq ($(PLATFORM),Darwin)
 #
 # MacOS
 #
-brew-libs = $(lib-sqlite) $(lib-curl) $(lib-git) $(lib-spatialindex) $(lib-geos) $(lib-jsonc)
+brew-libs = $(lib-sqlite) $(lib-curl) $(lib-git) $(lib-spatialindex) $(lib-geos) $(lib-jsonc) $(lib-tiff)
 
 $(brew-deps): Brewfile
 	brew bundle
@@ -183,13 +184,19 @@ $(lib-geos): $(brew-deps) | env
 	cp -av /usr/local/opt/geos/lib/libgeos*.dylib .delocate
 	$(MAKE) delocate-deps
 
+$(lib-tiff): $(brew-deps) | env
+	$(MAKE) .delocate
+	cp -av /usr/local/opt/libtiff/lib/libtiff*.dylib .delocate
+	$(MAKE) delocate-deps
+
 else
 #
 # Linux
 #
 
-build-libs += $(lib-spatialindex) $(lib-curl)
+build-libs += $(lib-spatialindex) $(lib-curl) $(lib-tiff)
 
+$(lib-proj): $(lib-curl) $(lib-sqlite) $(lib-tiff)
 $(lib-spatialindex): spatialindex_build
 $(lib-sqlite): sqlite_build
 $(lib-git): $(lib-curl) git_build
@@ -197,6 +204,7 @@ $(lib-curl): curl_build
 $(lib-geos): geos_build
 $(lib-jsonc): jsonc_build
 $(lib-pq): libpq_build
+$(lib-tiff): libtiff_build
 endif
 
 
@@ -287,6 +295,9 @@ lib-apsw: $(lib-apsw)
 
 .PHONY: lib-psycopg2
 lib-psycopg2: $(lib-psycopg2)
+
+.PHONY: lib-tiff
+lib-tiff: $(lib-tiff)
 
 .PHONY: build-Darwin
 build-Darwin: VENDOR:=build/vendor-Darwin
