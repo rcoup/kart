@@ -64,6 +64,8 @@ ci-test:
 	pytest \
 		--verbose \
 		-p no:sugar \
+		--capture=tee-sys \
+		--pastebin=all \
 		--cov-report term \
 		--cov-report html:test-results\coverage/ \
 		--junit-xml=test-results\junit.xml \
