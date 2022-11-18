@@ -1207,6 +1207,7 @@ jobs:
           sudo apt-get install -q -y --no-install-recommends ccache
           mkdir -p ${{ env.CCACHE_DIR }}
           echo "/usr/lib/ccache" >> $GITHUB_PATH
+          id
 
       - name: "setup: vcpkg"
         uses: lukka/run-vcpkg@v10
